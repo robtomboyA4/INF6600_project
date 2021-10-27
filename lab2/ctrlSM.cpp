@@ -9,9 +9,12 @@
 #define CTRL_TASK_PERIOD 0.1
 #define VIT_OPE 5
 
-#define P_HIGH 0
+#define P_HIGH -10
 #define P_LOW -1000
 #define LAMBDA 1000
+
+#define INIT_POS_X 0
+#define INIT_POS_Z 0
 
 #define PI 3.141592
 
@@ -38,6 +41,7 @@
 // Data structure used for the task data
 
 struct TaskData {
+    bool mode;
     double battery_lvl;
     double obs_faites;
     double curr_x;
@@ -50,6 +54,8 @@ struct TaskData {
     double d_alpha;
     double d_theta;
     double d_vit;
+    double x_dest;
+    double z_dest;
 };
 
 
@@ -67,25 +73,41 @@ double navig_function(int segment, void* data) {
                 d->curr_theta= ttAnalogIn(THETA);
                 d->curr_vit= ttAnalogIn(VITESSE);
                 d->distance= ttAnalogIn(DISTANCE);
+                d->x_dest;
+                d->z_dest;
                 return 0.000009;
-            case 2:
-                if(d->curr_x != LAMBDA || d->curr_z != (P_LOW-P_HIGH))
+            case 2: 
+                if(d->curr_z == 0)
                 {
-                    mexPrintf("Correct Alpha\n");
-                    double alpha = atan2((P_LOW-P_HIGH - d->curr_z),LAMBDA - d->curr_x)*180/PI;
+                    d->x_dest = LAMBDA/2;   //initial destiniation
+                    d->z_dest = P_LOW;
+                    double alpha = atan2((d->z_dest - d->curr_z),d->x_dest - d->curr_x)*180/PI;
                     d->d_alpha = (alpha - d->curr_alpha);
-                    //d->d_alpha = alpha;
                     d->d_theta = 0;
                     if(d->curr_vit != 5) {
                         d->d_vit = 5 - d->curr_vit;
                     }else {
                        d->d_vit = 0;
                     }
-                } else
-                {
-                    d->d_alpha = 0;
+                }
+                if((d->z_dest == P_LOW && d->curr_z > d->z_dest || d->distance > 10) || (d->z_dest == P_HIGH && d->curr_z < d->z_dest)){
+                    double alpha = atan2((d->z_dest - d->curr_z),d->x_dest - d->curr_x)*180/PI;
+                    d->d_alpha = (alpha - d->curr_alpha);
                     d->d_theta = 0;
-                    d->d_vit = -5;
+                    if(d->curr_vit != 5) {
+                        d->d_vit = 5 - d->curr_vit;
+                    }else {
+                       d->d_vit = 0;
+                    }
+                }else{
+                    //change state
+                    if(d->z_dest == P_LOW){
+                        d->z_dest = P_HIGH;
+                    }else{
+                        d->z_dest = P_LOW;
+                    }
+                    //next point
+                    d->x_dest += LAMBDA/2;
                 }
                 return 0.000008;
             default:
@@ -110,6 +132,11 @@ void init(){
     ttSetUserData(data);
     memset( data, 0, sizeof(TaskData) );
     
+    double dest[10];
+    dest[0] = LAMBDA/2;
+    for(int i = 1; i<10; i++){
+        dest[i] = dest[i-1] +LAMBDA/2;
+    }
     ttInitKernel(prioFP);
     
     mexPrintf("Simulation started\n");
