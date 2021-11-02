@@ -4,18 +4,16 @@
 
 #include <time.h>
 #include <cmath>
-//#include <random>
 
 #define CTRL_TASK_PERIOD 0.1
-#define OBS_TASK_PERIOD 5
+#define VIT_OPE 50
+#define ALPHA_MODE_0 35
 
-#define VIT_OPE 5
-#define MEMORY 128000
-
-#define P_HIGH -10
+#define P_HIGH -100
 #define P_LOW -1000
-#define LAMBDA 1000
 
+// #define LAMBDA 1000
+#define LAMBDA 100
 #define PI 3.141592
 
 //System Outputs
@@ -24,6 +22,7 @@
 #define CONS_VITESSE 3
 #define TAKE_OBS 4
 #define SEND_OBS 5
+#define CHARGE_BAT 6
 
 //System Inputs
 #define BATTERY_LEVEL 1
@@ -42,12 +41,14 @@
 
 // Data structure used for the task data
 
+#define NUM_MISSIONS 10
+#define BOUND_MIN -1000
+#define BOUND_MAX 1000
+
+
 struct TaskData {
-    int mode;
-    int take_obs;
-    int obs_faites;
-    int send_obs;
     double battery_lvl;
+    double obs_faites;
     double curr_x;
     double curr_y;
     double curr_z;
@@ -58,133 +59,49 @@ struct TaskData {
     double d_alpha;
     double d_theta;
     double d_vit;
-    double x_dest;
+    
+    //current mission id
+    int mission_id;
+    
+    //current mission destination
+    double x_dest; 
     double y_dest;
-    double z_dest;
+    
+    // pour check si on a pas depasse la pos voulue
+    double last_x; 
+    double last_y;
+    // next dest
+    double next_x;
+    double next_y;
+    double next_z;
+    
+    double r;
+    
+    //
+    bool dest_reached;
+    
+    int mode;
+    
+    int take_obs;
+    int send_obs;
+    int charge_bat;
+    
 };
 
+struct Point{
+    float x;
+    float y;
+};
 
-/* NAVIGATION CONTROLLER*/
-double navig_function(int segment, void* data) {
-    TaskData *d = static_cast<TaskData*>(data);
-    switch (segment) {
-        case 1:
-            d->obs_faites = ttAnalogIn(OBS_FAITES);
-            d->curr_x = ttAnalogIn(POS_X);
-            d->curr_y= ttAnalogIn(POS_Y);
-            d->curr_z= ttAnalogIn(POS_Z);
-            d->curr_alpha= ttAnalogIn(ALPHA);
-            d->curr_theta= ttAnalogIn(THETA);
-            d->curr_vit= ttAnalogIn(VITESSE);
-            d->distance= ttAnalogIn(DISTANCE);
-            return 0.000009;
-        case 2: 
-            if(d->curr_z == 0){
-                ttCreateJob("mission");
-                if (d->mode == 1){
-                    double alpha = atan2((d->z_dest - d->curr_z), d->x_dest - d->curr_x)*180/PI;
-                    double theta = atan2((d->y_dest - d->curr_y), d->x_dest - d->curr_x)*180/PI;
-                    d->d_alpha = (alpha - d->curr_alpha);
-                    d->d_theta = (theta - d->curr_theta);
-                    if(d->curr_vit != VIT_OPE) {
-                        d->d_vit = VIT_OPE - d->curr_vit;
-                    }else {
-                        d->d_vit = 0;
-                    }
-                    
-                }else{
-                    d->d_alpha = (0 - d->curr_alpha);
-                    d->d_theta = 0;
-                    d->d_vit = 0 - d->curr_vit;
-                }
-            }else if(d->z_dest == P_LOW && d->curr_z > d->z_dest && d->distance > 10) {
-                double alpha = atan2((d->z_dest - d->curr_z), d->x_dest - d->curr_x)*180/PI;
-                double theta = atan2((d->y_dest - d->curr_y), d->x_dest - d->curr_x)*180/PI;
-                d->d_alpha = (alpha - d->curr_alpha);
-                d->d_theta = (theta - d->curr_theta);
-                if(d->curr_vit != VIT_OPE) {
-                    d->d_vit = VIT_OPE - d->curr_vit;
-                }else {
-                    d->d_vit = 0;
-                }
-            }else if(d->z_dest == P_HIGH && d->curr_z <= d->z_dest){
-                double alpha = atan2((d->z_dest - d->curr_z),d->x_dest - d->curr_x)*180/PI;
-                double theta = atan2((d->y_dest - d->curr_y), d->x_dest - d->curr_x)*180/PI;
-                d->d_alpha = (alpha - d->curr_alpha);
-                d->d_theta = (theta - d->curr_theta);
-                if(d->curr_vit != 5) {
-                    d->d_vit = 5 - d->curr_vit;
-                }else {
-                    d->d_vit = 0;
-                }
-            }else if (d->z_dest == 0 && d->curr_z != d->z_dest){
-                double alpha = 35;
-                d->d_alpha = (alpha - d->curr_alpha);
-                d->d_theta = 0;
-                if(d->curr_vit != 5) {
-                    d->d_vit = 5 - d->curr_vit;
-                }else {
-                    d->d_vit = 0;
-                }
-            }else {
-                ttCreateJob("mission");
-            }   
-            return 0.000009;
-        default:
-            // send ouputs to operative system
-            ttAnalogOut(CONS_ALPHA, d->d_alpha);
-            ttAnalogOut(CONS_THETA, d->d_theta);
-            ttAnalogOut(CONS_VITESSE, d->d_vit);
-            return FINISHED;
-    }
-}
+Point missions[NUM_MISSIONS];
 
-double mission_function(int segment, void* data) {
-    TaskData *d = static_cast<TaskData*>(data);
-    d->battery_lvl = ttAnalogIn(BATTERY_LEVEL);
-    d->curr_x = ttAnalogIn(POS_X);
-    d->curr_y= ttAnalogIn(POS_Y);
-    d->curr_z= ttAnalogIn(POS_Z);
-    switch(segment) {
-        case 1:
-            if (d->curr_z == 0) {
-                if(d->battery_lvl > 5.0){
-                    mexPrintf("Start diving to P_LOW\n");
-                    d->mode = 1;
-                    d->x_dest = d->curr_x + LAMBDA/2;
-                    d->y_dest = d->curr_y + LAMBDA/2;
-                    d->z_dest = P_LOW;
-                }else{
-                    mexPrintf("Call mothership\n");
-                    d->mode = 0;
-                    d->x_dest = d->curr_x;
-                    d->y_dest = d->curr_y;
-                    d->z_dest = d->curr_z;
-                }
-            } else if (d->curr_z != 0 && d->z_dest == P_HIGH) {
-                if(d->battery_lvl > 5.0) {
-                    mexPrintf("Diving\n");
-                    d->mode = 1;
-                    d->x_dest += LAMBDA/2;
-                    d->y_dest += LAMBDA/2;
-                    d->z_dest = P_LOW;
-                }else{
-                    mexPrintf("Go to the top\n");
-                    d->mode = 0;
-                    d->z_dest = 0;
-                }
-            } else if (d->curr_z != 0 && d->z_dest == P_LOW) {
-                mexPrintf("Rising\n");
-                d->mode = 1;
-                d->x_dest += LAMBDA/2;
-                d->y_dest -= LAMBDA/2;
-                d->z_dest = P_HIGH;
-            }
-            return 0.000008;
-        default:
-            return FINISHED;
+void generate_missions(){
+    for(int i = 0; i< NUM_MISSIONS; i++)
+    {
+        missions[i].x= BOUND_MIN + (BOUND_MAX - BOUND_MIN) * ((float) rand() / RAND_MAX);
+        missions[i].y= BOUND_MIN + (BOUND_MAX - BOUND_MIN) * ((float) rand() / RAND_MAX);
     }
-}
+} 
 
 double obs_function(int segment, void* data) {
     TaskData *d = static_cast<TaskData*>(data);
@@ -208,33 +125,202 @@ double obs_function(int segment, void* data) {
     }
 }
 
+double navig_function(int segment, void* data) {
+    TaskData *d = static_cast<TaskData*>(data);
+    
+        switch (segment) {
+            case 1:
+                d->battery_lvl = ttAnalogIn(BATTERY_LEVEL);
+                d->obs_faites = ttAnalogIn(OBS_FAITES);
+                d->curr_x = ttAnalogIn(POS_X);
+                d->curr_y= ttAnalogIn(POS_Y);
+                d->curr_z= ttAnalogIn(POS_Z);
+                d->curr_alpha= ttAnalogIn(ALPHA);
+                d->curr_theta= ttAnalogIn(THETA);
+                d->curr_vit= ttAnalogIn(VITESSE);
+                d->distance= ttAnalogIn(DISTANCE);
+                return 0.000009;
+            case 2:
+                double r, next_r, next_alpha, next_theta, next_vit;
+                if(d->mode == 0)
+                {
+                    if (d->curr_z == 0)
+                    {
+                        next_alpha= d->curr_alpha;
+                        next_vit= 0;
+                        ttCreateJob("mission");
+                    }
+                    else
+                    {
+                        next_alpha= ALPHA_MODE_0;
+                        next_vit= VIT_OPE;
+                    }
+                    next_theta= d->curr_theta;
+                }
+                else{
+                    // checking if the mission is over !
+                    if ( (d->curr_x - d->x_dest)*(d->last_x - d->x_dest) <0 && 
+                            (d->curr_y - d->y_dest)*(d->last_y - d->y_dest) <0 ){
+                        mexPrintf("Mission finished!\n");
+                        d->dest_reached= true;
+                        ttCreateJob("mission");
+                    }
+                    else
+                    {
+                        next_theta= atan2(d->y_dest - d->curr_y, d->x_dest - d->curr_x)*180/PI;
+                        d->r -= sqrt( pow(d->last_x - d->curr_x, 2 ) + pow(d->last_y - d->curr_y, 2 ));
+        //              if we reach the x where we re supposed to change alpha
+                        if((d->curr_z >= P_HIGH && d->next_z == P_HIGH) || ((d->curr_z <= P_LOW|| d->distance <= 10) && d->next_z == P_LOW )  )//    ) ||  (d->curr_x - d->next_x)*(d->last_x - d->next_x) <0
+                        {
+                            d->r = LAMBDA  / 2;
+                            if (d->next_z == P_LOW) 
+                            {
+                                d->next_z= P_HIGH;
+                            }
+                            else // s’apprête à replonger
+                            {
+                                d->next_z= P_LOW;
+                                ttCreateJob("mission");
+                            }
+                        }
+                        
+                        //next_r= (d->next_x - d->curr_x )/ cos(next_theta * PI / 180); //abs()
+                        mexPrintf("d->r %f\n", d->r);
+                        next_alpha = d->r < 0 ? ( d->next_z== P_HIGH ? 90 : -90 ) : atan2(d->next_z - d->curr_z, d->r )*180/PI; // next_r 
+                        mexPrintf("next_alpha %f\n", next_alpha);
+                        next_vit= VIT_OPE;
+                    }
+                    //just before leaving
+                    d->last_x= d->curr_x;
+                    d->last_y= d->curr_y;
+                }
+                d->d_theta = next_theta - d->curr_theta ;
+                d->d_alpha = next_alpha - d->curr_alpha;
+                d->d_vit = next_vit - d->curr_vit;
+                return 0.000008;
+            default:
+                // send ouputs to operative system
+                ttAnalogOut(CONS_ALPHA, d->d_alpha);
+                ttAnalogOut(CONS_THETA, d->d_theta);
+                ttAnalogOut(CONS_VITESSE, d->d_vit);
+                
+                return FINISHED;
+        }
+    
+    
+}
+
+
+double mission_function(int segment, void* data) {
+    TaskData *d = static_cast<TaskData*>(data);
+    switch(segment) {
+        case 1:
+            d->battery_lvl = ttAnalogIn(BATTERY_LEVEL);
+            d->curr_x = ttAnalogIn(POS_X);
+            d->curr_y= ttAnalogIn(POS_Y);
+            d->curr_z= ttAnalogIn(POS_Z);
+            d->curr_vit= ttAnalogIn(VITESSE);
+            return 0.000004;
+        case 2:
+            if ( d->curr_x == 0 && d->curr_y == 0 && d->curr_z == 0) // just started 
+            {
+                d->last_x= 0;
+                d->last_y= 0;
+                d->mission_id= 0;
+                d->mode= 1;
+                d->dest_reached= false;
+                d->x_dest= missions[d->mission_id].x;
+                d->y_dest= missions[d->mission_id].y;
+                d->r= LAMBDA / 2;
+                d->next_z= P_LOW;
+                d->charge_bat = 0;
+            }
+            else if(d->dest_reached){ // new mission
+                d->mission_id +=1 ;
+                if (d->mission_id>=NUM_MISSIONS)
+                {
+
+                }
+                else 
+                {
+                    d->x_dest= missions[d->mission_id].x;
+                    d->y_dest= missions[d->mission_id].y;
+                    d->dest_reached= false;
+                }
+            }
+            else
+            {
+                if (d->battery_lvl <= 5)
+                {
+                    d-> mode = 0;
+                    if(d->curr_vit == 0)
+                    {
+                        d->charge_bat= 1;
+                    }
+                }
+                else
+                    d-> mode = 1;
+            }
+        default:    
+            ttAnalogOut(TAKE_OBS, d->take_obs);
+            ttAnalogOut(SEND_OBS, d->send_obs);
+            ttAnalogOut(CHARGE_BAT, d->charge_bat);
+            return FINISHED;
+    }
+}
+
+double battery_full(int segment, void* data) {
+    TaskData *d = static_cast<TaskData*>(data);
+    switch (segment) {
+        case 1:
+            d->charge_bat = 0;
+            ttCreateJob("mission");
+            return 1;
+        default:
+            return FINISHED;
+    }
+}
+
 // Kernel init function    
 void init(){
     // Allocate memory for the task and store pointer in UserData
     TaskData *data = new TaskData;
+    
     ttSetUserData(data);
     memset( data, 0, sizeof(TaskData) );
-    double dest[10];
-    dest[0] = LAMBDA/2;
-    for(int i = 1; i<10; i++){
-        dest[i] = dest[i-1] +LAMBDA/2;
-    }
-    double t = 0;
+    
     ttInitKernel(prioFP);
     
+    srand((unsigned) time(0));
+    generate_missions();
+    
+    for(int i = 0; i< NUM_MISSIONS; i++)
+    {
+        mexPrintf("%f , %f\n", missions[i].x , missions[i].y);
+    }
+    
     mexPrintf("Simulation started\n");
+
+    
     ttCreateTask("mission", 0.00001, mission_function, data);
     ttSetPriority(1, "mission");
-    
-    //ttCreateTask("antenna", 0.00001, antenna_comm, data);
-    //ttSetPriority(3);
     
     ttCreatePeriodicTask("nav", 0.0, CTRL_TASK_PERIOD, navig_function, data);
     ttSetPriority(2, "nav");
     
     
-    ttCreatePeriodicTask("obs", 1.0, 5.0, obs_function, data);
-    ttSetPriority(4, "obs");
+    // create a job to initialize vars
+    ttCreateJob("mission");
+    
+    
+    ttCreateHandler("battery_full", 1, battery_full, data);
+//     ttCreateHandler("data_sent", 1, data_sent, data);
+    
+    ttAttachTriggerHandler(TRIGGER_ALARM_BAT, "battery_full");
+//     ttAttachTriggerHandler(TRIGGER_DATA, "data_sent");
+    
+//     ttCreatePeriodicTask("obs", 1.0, 5.0, obs_function, data);
+//     ttSetPriority(3, "obs");
 }
 
 // Kernel cleanup function
@@ -245,3 +331,15 @@ void cleanup() {
     
     mexPrintf("Simulation ended\n");
 }
+
+
+// void print_data(TaskData &d)
+// {
+//     mexPrintf("next_theta %f, next_alpha %f\n", next_theta, next_alpha);
+//     mexPrintf("x_dest %f, y_dest %f, , mission_id %d\n", d->x_dest , d->y_dest, d->mission_id );
+//     mexPrintf("d->curr_x %f, d->curr_y %f, d->curr_z %f\n", d->curr_x, d->curr_y, d->curr_z);
+//     mexPrintf("d->next_x %f, d->next_y %f, d->next_z %f\n",d->next_x, d->next_y, d->next_z);
+//     mexPrintf("d->last_x %f, d->last_y %f\n", d->last_x,  d->last_y);
+//     mexPrintf("d->distance %f\n", d->distance);
+// }
+                    
