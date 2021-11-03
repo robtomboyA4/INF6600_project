@@ -6,15 +6,17 @@
 #include <cmath>
 
 #define CTRL_TASK_PERIOD 0.1
-#define VIT_OPE 50
+#define OBS_TASK_PERIOD 5
+#define VIT_OPE 5
 #define ALPHA_MODE_0 35
 
 #define P_HIGH -100
 #define P_LOW -1000
 
-// #define LAMBDA 1000
-#define LAMBDA 100
+#define LAMBDA 300
 #define PI 3.141592
+#define MEMORY 128000
+#define OBS_SIZE 20
 
 //System Outputs
 #define CONS_ALPHA 1
@@ -41,10 +43,11 @@
 
 // Data structure used for the task data
 
-#define NUM_MISSIONS 10
+#define NUM_MISSIONS 2
 #define BOUND_MIN -1000
 #define BOUND_MAX 1000
 
+#define NUM_OBS_PER_CYCLE sqrt( pow(LAMBDA, 2 ) + pow(2 * (P_HIGH - P_LOW), 2 )) / VIT_OPE / OBS_TASK_PERIOD
 
 struct TaskData {
     double battery_lvl;
@@ -71,8 +74,6 @@ struct TaskData {
     double last_x; 
     double last_y;
     // next dest
-    double next_x;
-    double next_y;
     double next_z;
     
     double r;
@@ -85,7 +86,10 @@ struct TaskData {
     int take_obs;
     int send_obs;
     int charge_bat;
+    int data_sent;
     
+    
+    int memoire_restante;
 };
 
 struct Point{
@@ -110,15 +114,11 @@ double obs_function(int segment, void* data) {
             d->obs_faites = ttAnalogIn(OBS_FAITES);
             return 0.000001;
         case 2:
-            if (d->mode == 1){
-                d->take_obs = 1;
-            }else{
-                d->take_obs = 0;
-            }
-            if(d->obs_faites == 1){
-                mexPrintf("OBSERVATION DONE");
-            }
-            return 0.000002;
+            if(d->obs_faites == 1)
+                d->memoire_restante-= 1;
+            else
+                mexPrintf("Observation non effectuée\n");
+            return 0.000001;
         default:
             ttAnalogOut(TAKE_OBS, d->take_obs);
             return FINISHED;
@@ -148,7 +148,8 @@ double navig_function(int segment, void* data) {
                     {
                         next_alpha= d->curr_alpha;
                         next_vit= 0;
-                        ttCreateJob("mission");
+                        if( d->curr_vit== 0 ) // check if the sousMarin stopped moving so we can call the mothership
+                            ttCreateJob("mission");
                     }
                     else
                     {
@@ -164,12 +165,15 @@ double navig_function(int segment, void* data) {
                         mexPrintf("Mission finished!\n");
                         d->dest_reached= true;
                         ttCreateJob("mission");
+                        
+                        mexPrintf("d->curr_theta %f\n", d->curr_theta);
+                        next_theta= d->curr_theta;
                     }
                     else
                     {
                         next_theta= atan2(d->y_dest - d->curr_y, d->x_dest - d->curr_x)*180/PI;
                         d->r -= sqrt( pow(d->last_x - d->curr_x, 2 ) + pow(d->last_y - d->curr_y, 2 ));
-        //              if we reach the x where we re supposed to change alpha
+        //              if we reach the pos where we re supposed to change alpha
                         if((d->curr_z >= P_HIGH && d->next_z == P_HIGH) || ((d->curr_z <= P_LOW|| d->distance <= 10) && d->next_z == P_LOW )  )//    ) ||  (d->curr_x - d->next_x)*(d->last_x - d->next_x) <0
                         {
                             d->r = LAMBDA  / 2;
@@ -183,17 +187,13 @@ double navig_function(int segment, void* data) {
                                 ttCreateJob("mission");
                             }
                         }
-                        
-                        //next_r= (d->next_x - d->curr_x )/ cos(next_theta * PI / 180); //abs()
-                        mexPrintf("d->r %f\n", d->r);
                         next_alpha = d->r < 0 ? ( d->next_z== P_HIGH ? 90 : -90 ) : atan2(d->next_z - d->curr_z, d->r )*180/PI; // next_r 
-                        mexPrintf("next_alpha %f\n", next_alpha);
                         next_vit= VIT_OPE;
                     }
-                    //just before leaving
-                    d->last_x= d->curr_x;
-                    d->last_y= d->curr_y;
                 }
+                //just before leaving
+                d->last_x= d->curr_x;
+                d->last_y= d->curr_y;
                 d->d_theta = next_theta - d->curr_theta ;
                 d->d_alpha = next_alpha - d->curr_alpha;
                 d->d_vit = next_vit - d->curr_vit;
@@ -234,12 +234,16 @@ double mission_function(int segment, void* data) {
                 d->r= LAMBDA / 2;
                 d->next_z= P_LOW;
                 d->charge_bat = 0;
+                d->data_sent = 0;
+                d->memoire_restante= MEMORY/OBS_SIZE;
             }
             else if(d->dest_reached){ // new mission
                 d->mission_id +=1 ;
                 if (d->mission_id>=NUM_MISSIONS)
                 {
-
+                    d->mode = 0;
+                    d->take_obs= 0;
+                    d->send_obs= 1;
                 }
                 else 
                 {
@@ -248,21 +252,39 @@ double mission_function(int segment, void* data) {
                     d->dest_reached= false;
                 }
             }
-            else
+            else if (d->charge_bat== 1 ) // if it s still charging
             {
-                if (d->battery_lvl <= 5)
-                {
-                    d-> mode = 0;
-                    if(d->curr_vit == 0)
-                    {
-                        d->charge_bat= 1;
-                    }
-                }
-                else
-                    d-> mode = 1;
+                d->charge_bat=  d->battery_lvl >=100 ? 0 : 1 ;
             }
-        default:    
-            ttAnalogOut(TAKE_OBS, d->take_obs);
+            else if (d->data_sent == 1 ) // if it sent its data
+            {
+                d->data_sent=  0 ;
+                d->mode = 1;
+                if (d->mission_id>=NUM_MISSIONS)
+                    d->take_obs= 0; // stop taking obs 
+                else
+                    d->take_obs= 1; // start taking obs again
+                d->send_obs= 0; // stop sending observations
+            }
+            else if (d->battery_lvl <= 5 || d->memoire_restante < NUM_OBS_PER_CYCLE ) // if it needs to be charged or memory is full
+            {
+                d->mode = 0;
+                d->take_obs= 0;
+                if(d->curr_vit == 0) // check if the SM stopped moving
+                {
+                    if(d->battery_lvl <= 5)
+                        d->charge_bat= 1;
+                    else
+                        d->send_obs= 1;
+                }
+            }
+            else //
+            {
+                d->mode = 1;
+                d->take_obs= 1;
+            }
+            return 0.000001;
+        default:
             ttAnalogOut(SEND_OBS, d->send_obs);
             ttAnalogOut(CHARGE_BAT, d->charge_bat);
             return FINISHED;
@@ -274,6 +296,19 @@ double battery_full(int segment, void* data) {
     switch (segment) {
         case 1:
             d->charge_bat = 0;
+            ttCreateJob("mission");
+            return 1;
+        default:
+            return FINISHED;
+    }
+}
+
+double data_sent(int segment, void* data) {
+    TaskData *d = static_cast<TaskData*>(data);
+    switch (segment) {
+        case 1:
+            mexPrintf("trigger");
+            d->data_sent = 1;
             ttCreateJob("mission");
             return 1;
         default:
@@ -308,19 +343,19 @@ void init(){
     ttCreatePeriodicTask("nav", 0.0, CTRL_TASK_PERIOD, navig_function, data);
     ttSetPriority(2, "nav");
     
+    ttCreatePeriodicTask("obs", 1.0, OBS_TASK_PERIOD, obs_function, data);
+    ttSetPriority(3, "obs");
     
     // create a job to initialize vars
     ttCreateJob("mission");
     
     
     ttCreateHandler("battery_full", 1, battery_full, data);
-//     ttCreateHandler("data_sent", 1, data_sent, data);
-    
     ttAttachTriggerHandler(TRIGGER_ALARM_BAT, "battery_full");
-//     ttAttachTriggerHandler(TRIGGER_DATA, "data_sent");
     
-//     ttCreatePeriodicTask("obs", 1.0, 5.0, obs_function, data);
-//     ttSetPriority(3, "obs");
+    ttCreateHandler("data_sent", 1, data_sent, data);
+	ttAttachTriggerHandler(TRIGGER_DATA, "data_sent");
+    
 }
 
 // Kernel cleanup function
